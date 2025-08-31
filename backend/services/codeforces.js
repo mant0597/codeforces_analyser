@@ -1,5 +1,5 @@
 const axios = require("axios");
-const Submission = require("../models/SubmissionModel");
+const User = require("../models/UserModel");
 
 async function fetchAndSaveSubmissions(handle) {
   try {
@@ -11,26 +11,23 @@ async function fetchAndSaveSubmissions(handle) {
       throw new Error("Codeforces API error");
     }
 
-    const submissions = res.data.result;
-
-    for (let sub of submissions) {
-      const problem = sub.problem || {};
-      await Submission.updateOne(
-  { handle, contestId: sub.contestId, index: problem.index, creationTime: sub.creationTimeSeconds },
-  { $setOnInsert: { 
-      name: problem.name,
-      rating: problem.rating,
-      tags: problem.tags,
+    const submissions = res.data.result.map(sub => ({
+      contestId: sub.contestId,
+      index: sub.problem?.index,
+      name: sub.problem?.name,
+      rating: sub.problem?.rating,
+      tags: sub.problem?.tags,
       verdict: sub.verdict,
       programmingLanguage: sub.programmingLanguage,
-      creationTime: sub.creationTimeSeconds,
-  }},
-  { upsert: true }
-);
-    }
+      creationTime: sub.creationTimeSeconds
+    }));
 
-    return { success: true, message: `${submissions.length} submissions processed.` };
+    await User.updateMany(
+      { codeforces_id: handle },
+      { $set: { submissions } }
+    );
 
+    return { success: true, message: `${submissions.length} submissions saved to user.` };
   } catch (err) {
     console.error("Error fetching submissions:", err);
     return { success: false, message: "Failed to fetch submissions" };

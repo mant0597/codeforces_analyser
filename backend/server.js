@@ -6,7 +6,7 @@ const jwt=require("jsonwebtoken")
 const axios = require("axios");
 const { fetchAndSaveSubmissions } = require("./services/codeforces");
 const authMiddleware = require("./middleware/auth");
-const Submission = require("./models/SubmissionModel");
+const Submission = require("./models/UserModel");
 const app=express();
 const cors = require('cors');
 app.use(cors());
@@ -22,24 +22,51 @@ const connectDB = async () => {
   }
 };
 connectDB();
-app.post("/signup",async (req,res)=>{
-    try{
-    const {email,username,password,codeforces_id}=req.body;
-    const existingUser= await User.findOne({$or:[{email},{username}]});
-    if(existingUser){
-        return res.status(409).json("User already exists");
-    }
-    const saltRounds=10;
-    const hashedPassword= await bcrypt.hash(password,saltRounds);
-    const user=new User({
-        email,username,password:hashedPassword,codeforces_id
-    })
-    const saved=await user.save();
-    res.status(200).json({success:true,message:"Registered Successfully"})
-}catch(err){
-    console.log("error",err)
-}
-})
+app.post("/signup", async (req, res) => {
+  try {
+    const { email, username, password, codeforces_id } = req.body;
+
+    const existingUser = await User.findOne({ $or: [{ email }, { username }, { codeforces_id }] });
+    if (existingUser) return res.status(409).json("User already exists");
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Fetch submissions from Codeforces
+    const resSub = await axios.get("https://codeforces.com/api/user.status", {
+      params: { handle: codeforces_id, from: 1, count: 1000 }
+    });
+
+    const submissions = (resSub.data.status === "OK"
+      ? resSub.data.result.map(sub => ({
+          contestId: sub.contestId,
+          index: sub.problem?.index,
+          name: sub.problem?.name,
+          rating: sub.problem?.rating,
+          tags: sub.problem?.tags,
+          verdict: sub.verdict,
+          programmingLanguage: sub.programmingLanguage,
+          creationTime: sub.creationTimeSeconds
+        }))
+      : []
+    );
+
+    const user = new User({
+      email,
+      username,
+      password: hashedPassword,
+      codeforces_id,
+      submissions
+    });
+
+    await user.save();
+
+    res.status(200).json({ success: true, message: "Registered Successfully", submissionsCount: submissions.length });
+  } catch (err) {
+    console.log("Signup error", err);
+    res.status(500).json({ message: "Error registering user" });
+  }
+});
+
 app.post("/signin",async (req,res)=>{
     try{
     const {email,password}=req.body;
@@ -68,62 +95,55 @@ app.get("/codeforces/me", authMiddleware, async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
+
     const handle = user.codeforces_id;
-    const [info, rating, submissions] = await Promise.all([
+
+    const [info, rating] = await Promise.all([
       axios.get(`https://codeforces.com/api/user.info?handles=${handle}`),
-      axios.get(`https://codeforces.com/api/user.rating?handle=${handle}`),
-      axios.get(`https://codeforces.com/api/user.status?handle=${handle}&from=1&count=1000`)
+      axios.get(`https://codeforces.com/api/user.rating?handle=${handle}`)
     ]);
 
     res.json({
       handle: handle,
       info: info.data.result[0],
       ratingHistory: rating.data.result,
-      submissions: submissions.data.result
+      submissions: user.submissions 
     });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ message: "Error fetching Codeforces data" });
   }
 });
+
 app.get("/fetch/:handle",authMiddleware, async (req, res) => {
   const { handle } = req.params;
   const result = await fetchAndSaveSubmissions(handle);
   res.json(result);
 });
-app.get("/analysis/:handle", async (req, res) => {
-  const { handle } = req.params;
+app.get("/analysis/:handle", authMiddleware, async (req, res) => {
+  const user = await User.findOne({ codeforces_id: req.params.handle });
+  if (!user) return res.status(404).json({ message: "User not found" });
 
-  try {
-    const result = await Submission.aggregate([
-      { $match: { handle } }, 
-      { $unwind: "$tags" }, 
-      {
-        $group: {
-          _id: "$tags",
-          total: { $sum: 1 },
-          solved: {
-            $sum: { $cond: [{ $eq: ["$verdict", "OK"] }, 1, 0] }
-          }
-        }
-      },
-      {
-        $project: {
-          topic: "$_id",
-          attempts: "$total",
-          solved: 1,
-          successRate: { $divide: ["$solved", "$total"] }
-        }
-      },
-      { $sort: { successRate: 1 } }
-    ]);
+  const topicsMap = {};
+  user.submissions.forEach(sub => {
+    if (!sub.tags) return;
+    sub.tags.forEach(tag => {
+      if (!topicsMap[tag]) topicsMap[tag] = { solved: 0, attempts: 0 };
+      topicsMap[tag].attempts += 1;
+      if (sub.verdict === "OK") topicsMap[tag].solved += 1;
+    });
+  });
 
-    res.json({ success: true, topics: result });
-  } catch (err) {
-    console.error(err);
-    res.json({ success: false, message: "Error in analysis" });
-  }
+  const topics = Object.keys(topicsMap).map(tag => ({
+    topic: tag,
+    attempts: topicsMap[tag].attempts,
+    solved: topicsMap[tag].solved,
+    successRate: topicsMap[tag].solved / topicsMap[tag].attempts
+  }));
+
+  res.json({ success: true, topics });
 });
+
 app.get("/rating/:handle", async (req, res) => {
   const { handle } = req.params;
   try {
@@ -151,17 +171,16 @@ app.get("/rating/:handle", async (req, res) => {
 
 app.get("/difficulty/:handle", async (req, res) => {
   const { handle } = req.params;
-
   try {
-    const result = await Submission.aggregate([
-      { $match: { handle, rating: { $exists: true } } },
+    const result = await User.aggregate([
+      { $match: { codeforces_id: handle } },
+      { $unwind: "$submissions" },
+      { $match: { "submissions.rating": { $exists: true } } },
       {
         $group: {
-          _id: "$rating",
+          _id: "$submissions.rating",
           total: { $sum: 1 },
-          solved: {
-            $sum: { $cond: [{ $eq: ["$verdict", "OK"] }, 1, 0] }
-          }
+          solved: { $sum: { $cond: [{ $eq: ["$submissions.verdict", "OK"] }, 1, 0] } }
         }
       },
       {
@@ -177,17 +196,21 @@ app.get("/difficulty/:handle", async (req, res) => {
 
     res.json({ success: true, difficulties: result });
   } catch (err) {
+    console.error(err);
     res.json({ success: false, message: "Error in difficulty analysis" });
   }
 });
+
 app.get("/activity/:handle", async (req, res) => {
   const { handle } = req.params;
-try {
-    const result = await Submission.aggregate([
-      { $match: { handle, verdict: "OK" } },
+  try {
+    const result = await User.aggregate([
+      { $match: { codeforces_id: handle } },
+      { $unwind: "$submissions" },
+      { $match: { "submissions.verdict": "OK" } },
       {
         $addFields: {
-          creationDate: { $toDate: { $multiply: ["$creationTime", 1000] } } 
+          creationDate: { $toDate: { $multiply: ["$submissions.creationTime", 1000] } }
         }
       },
       {
@@ -227,15 +250,22 @@ app.get("/solved/:handle", async (req, res) => {
   const { handle } = req.params;
 
   try {
-    const solvedProblems = await Submission.aggregate([
-      { $match: { handle, verdict: "OK" } },
-      { $group: { _id: { contestId: "$contestId", index: "$index" } } },
-      { $count: "solvedCount" }
+    const result = await User.aggregate([
+      { $match: { codeforces_id: handle } },      
+      { $unwind: "$submissions" },                  
+      { $match: { "submissions.verdict": "OK" } }, 
+      { $group: { 
+          _id: { 
+            contestId: "$submissions.contestId", 
+            index: "$submissions.index" 
+          } 
+      }},
+      { $count: "solvedCount" }                    
     ]);
 
     res.json({
       success: true,
-      solvedCount: solvedProblems[0]?.solvedCount || 0
+      solvedCount: result[0]?.solvedCount || 0
     });
   } catch (err) {
     console.error(err);
@@ -243,16 +273,17 @@ app.get("/solved/:handle", async (req, res) => {
   }
 });
 
-
 app.get("/streak/:handle", async (req, res) => {
   const { handle } = req.params;
 
   try {
-    const result = await Submission.aggregate([
-      { $match: { handle, verdict: "OK" } },
+    const result = await User.aggregate([
+      { $match: { codeforces_id: handle } },
+      { $unwind: "$submissions" },
+      { $match: { "submissions.verdict": "OK" } },
       {
         $addFields: {
-          creationDate: { $toDate: { $multiply: ["$creationTime", 1000] } }
+          creationDate: { $toDate: { $multiply: ["$submissions.creationTime", 1000] } }
         }
       },
       {
@@ -272,14 +303,14 @@ app.get("/streak/:handle", async (req, res) => {
               month: "$_id.month",
               day: "$_id.day"
             }
-          }
+          },
+          _id: 0
         }
       },
       { $sort: { date: 1 } }
     ]);
 
     const dates = result.map(r => new Date(r.date));
-    const dateStrings = dates.map(d => d.toISOString().split("T")[0]);
     let currentStreak = 0;
     let longestStreak = 0;
     let streak = 1;
@@ -292,21 +323,19 @@ app.get("/streak/:handle", async (req, res) => {
         if (diff === 0 || diff === 1) {
           currentStreak++;
           today = dates[i];
-        } else if (diff > 1) {
-          break;
-        }
+        } else if (diff > 1) break;
       }
       for (let i = 1; i < dates.length; i++) {
         const diff = (dates[i] - dates[i - 1]) / (1000 * 60 * 60 * 24);
-        if (diff === 1) {
-          streak++;
-        } else {
+        if (diff === 1) streak++;
+        else {
           longestStreak = Math.max(longestStreak, streak);
           streak = 1;
         }
       }
       longestStreak = Math.max(longestStreak, streak);
     }
+
     const currentYear = new Date().getFullYear();
     const activeDaysCurrentYear = dates.filter(d => d.getFullYear() === currentYear).length;
 

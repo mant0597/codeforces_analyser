@@ -1,5 +1,6 @@
 
 import { createContext, useState, useContext, useEffect } from "react";
+import API from "../api";
 
 const AuthContext = createContext();
 
@@ -14,7 +15,6 @@ export const AuthProvider = ({ children }) => {
     if (storedUser && storedUser !== "undefined") {
       try {
         setUser(JSON.parse(storedUser));
-        
       } catch (err) {
         console.error("Failed to parse stored user", err);
         localStorage.removeItem("user");
@@ -23,6 +23,7 @@ export const AuthProvider = ({ children }) => {
 
     if (storedToken && storedToken !== "undefined") {
       setToken(storedToken);
+      API.defaults.headers.common["Authorization"] = `Bearer ${storedToken}`;
     }
   }, []);
 
@@ -34,6 +35,8 @@ export const AuthProvider = ({ children }) => {
 
     localStorage.setItem("user", JSON.stringify(userData));
     localStorage.setItem("token", tokenValue);
+
+    API.defaults.headers.common["Authorization"] = `Bearer ${tokenValue}`;
   };
 
   const logout = () => {
@@ -41,6 +44,7 @@ export const AuthProvider = ({ children }) => {
     setToken(null);
     localStorage.removeItem("user");
     localStorage.removeItem("token");
+    delete API.defaults.headers.common["Authorization"];
   };
 
   return (

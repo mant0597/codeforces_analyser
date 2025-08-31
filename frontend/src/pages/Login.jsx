@@ -1,25 +1,34 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import API from "../api";
-import {useAuth} from "../context/authContext"
+import API, { setAuthToken } from "../api"; // import setAuthToken
+import { useAuth } from "../context/authContext";
+
 export default function Login() {
   const [form, setForm] = useState({ email: "", password: "" });
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState(null);
   const navigate = useNavigate();
-    const { login } = useAuth();
+  const { login } = useAuth();
+
   const onChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
   const onSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setMsg(null);
+
     try {
       const res = await API.post("/signin", form);
+
       if (res.data && res.data.success) {
         console.log(res.data);
 
+        // Save user and token in context
         login(res.data.user, res.data.token);
+
+        // Set token globally for Axios
+        setAuthToken(res.data.token);
+
         setMsg({ type: "success", text: "Logged in successfully!" });
         setTimeout(() => navigate("/dashboard"), 900);
       } else {
@@ -28,6 +37,7 @@ export default function Login() {
     } catch (err) {
       setMsg({ type: "error", text: err?.response?.data?.message || err.message });
     }
+
     setLoading(false);
   };
 
