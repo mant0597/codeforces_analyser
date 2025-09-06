@@ -1,7 +1,7 @@
-import { createContext, useState, useContext, useEffect } from "react";
+import { createContext, useState, useEffect } from "react";
 import API from "../api";
 
-const AuthContext = createContext();
+export const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -28,13 +28,10 @@ export const AuthProvider = ({ children }) => {
 
   const login = (userData, tokenValue) => {
     if (!userData || !tokenValue) return;
-
     setUser(userData);
     setToken(tokenValue);
-
     localStorage.setItem("user", JSON.stringify(userData));
     localStorage.setItem("token", tokenValue);
-
     API.defaults.headers.common["Authorization"] = `Bearer ${tokenValue}`;
   };
 
@@ -52,5 +49,3 @@ export const AuthProvider = ({ children }) => {
     </AuthContext.Provider>
   );
 };
-
-export const useAuth = () => useContext(AuthContext);
