@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import API, { setAuthToken } from "../api"; // import setAuthToken
-import { useAuth } from "../context/authContext";
+import useAuth  from "../hooks/useAuth";
 
 export default function Login() {
   const [form, setForm] = useState({ email: "", password: "" });
@@ -22,11 +22,7 @@ export default function Login() {
 
       if (res.data && res.data.success) {
         console.log(res.data);
-
-        // Save user and token in context
         login(res.data.user, res.data.token);
-
-        // Set token globally for Axios
         setAuthToken(res.data.token);
 
         setMsg({ type: "success", text: "Logged in successfully!" });
